@@ -126,7 +126,7 @@
 #include <linux/himax_852xD.h>
 #endif
 
-#define MSM_PMEM_ADSP_SIZE         0x7800000
+#define MSM_PMEM_ADSP_SIZE         0x8600000
 #define MSM_PMEM_AUDIO_SIZE        0x4CF000
 #define MSM_PMEM_SIZE              0x0 
 
@@ -1862,9 +1862,25 @@ void m7wl_pm8xxx_adc_device_register(void)
 	m7wl_cable_detect_register();
 }
 
+struct pm8xxx_gpio_init otg_pmic_gpio_pvt[] = {
+	PM8XXX_GPIO_INIT(VREG_S4_1V8_PVT, PM_GPIO_DIR_OUT,
+			 PM_GPIO_OUT_BUF_CMOS, 0, PM_GPIO_PULL_NO,
+			 PM_GPIO_VIN_S4, PM_GPIO_STRENGTH_LOW,
+			 PM_GPIO_FUNC_NORMAL, 0, 0),
+};
+
 void m7wl_add_usb_devices(void)
 {
+	int rc;
 	printk(KERN_INFO "%s rev: %d\n", __func__, system_rev);
+
+	if (system_rev >= PVT) {
+		rc = pm8xxx_gpio_config(otg_pmic_gpio_pvt[0].gpio,
+				&otg_pmic_gpio_pvt[0].config);
+		if (rc)
+			pr_info("[USB_BOARD] %s: Config ERROR: GPIO=%u, rc=%d\n",
+					__func__, otg_pmic_gpio_pvt[0].gpio, rc);
+	}
 
 	android_usb_pdata.products[0].product_id =
 			android_usb_pdata.product_id;
@@ -3237,16 +3253,20 @@ static struct synaptics_i2c_rmi_platform_data syn_ts_3k_data[] = {
 		.abs_x_max = 1600,
 		.abs_y_min = 0,
 		.abs_y_max = 2710,
+		.display_width = 1080,
+		.display_height = 1920,
 		.gpio_irq = TP_ATTz,
 		.gpio_reset = TP_RSTz,
 		.report_type = SYN_AND_REPORT_TYPE_B,
 		.default_config = 1,
 		.large_obj_check = 1,
 		.tw_pin_mask = 0x0088,
-		
+		.sensor_id = SENSOR_ID_CHECKING_EN | 0x88,
 		.multitouch_calibration = 1,
+		.psensor_detection = 1,
 		.reduce_report_level = {60, 60, 50, 0, 0},
 		.block_touch_time_near = 200,
+		.virtual_key = m7_vk_data,
 		.lpm_power = synaptics_power_LPM,
 		.config = {0x33, 0x32, 0x02, 0x00, 0x00, 0x7F, 0x03, 0x1E,
 			0x05, 0x09, 0x00, 0x01, 0x01, 0x00, 0x10, 0x54,
@@ -3275,7 +3295,7 @@ static struct synaptics_i2c_rmi_platform_data syn_ts_3k_data[] = {
 			0x40, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 			0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF,
 			0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-			0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x51, 0x51, 0x51,
+			0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xC8, 0xC8, 0x51,
 			0x51, 0x51, 0x51, 0x51, 0x51, 0xCD, 0x0D, 0x04,
 			0x00, 0x02, 0x03, 0x04, 0x05, 0x1B, 0x1A, 0x19,
 			0x18, 0x16, 0x17, 0x15, 0x0B, 0x01, 0x00, 0x11,
@@ -3486,6 +3506,73 @@ static struct attribute_group properties_attr_group = {
 	.attrs = properties_attrs,
 };
 
+static struct regulator *motion_sensor_vreg_8921_l17;
+static struct regulator *g_sensor_vreg_8921_l17;
+static struct regulator *compass_vreg_8921_l17;
+static struct regulator *gyro_vreg_8921_l17;
+static DEFINE_MUTEX(sensor_lock);
+
+static int m7wl_g_sensor_power_LPM(int on)
+{
+	int rc = 0;
+
+	mutex_lock(&sensor_lock);
+
+	printk(KERN_DEBUG "[GSNR][BMA250_BOSCH] %s, on = %d, "
+			  "g_sensor_vreg_8921_l17 = 0x%p\n",
+			  __func__, on, g_sensor_vreg_8921_l17);
+
+	if (!g_sensor_vreg_8921_l17)
+		_GET_REGULATOR(g_sensor_vreg_8921_l17, "8921_l17_g_sensor");
+
+	if (on) {
+		rc = regulator_set_optimum_mode(g_sensor_vreg_8921_l17, 100);
+		if (rc < 0) {
+			pr_err("[GSNR][BMA250_BOSCH] set_optimum_mode L17 to"
+				" LPM failed, rc = %d\n", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[GSNR][BMA250_BOSCH]%s unlock 1\n",
+					  __func__);
+			return -EINVAL;
+		}
+		rc = regulator_enable(g_sensor_vreg_8921_l17);
+		if (rc) {
+			pr_err("'%s' regulator enable failed, rc=%d\n",
+				"g_sensor_vreg_8921_l17", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[GSNR][BMA250_BOSCH]%s unlock 2\n",
+					  __func__);
+			return rc;
+		}
+		printk(KERN_DEBUG "[GSNR][BMA250_BOSCH] %s, Set to Low Power"
+			" Mode\n", __func__);
+	} else {
+		rc = regulator_set_optimum_mode(g_sensor_vreg_8921_l17, 100000);
+		if (rc < 0) {
+			pr_err("[GSNR][BMA250_BOSCH] set_optimum_mode L17 to"
+				" Normal mode failed, rc = %d\n", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[GSNR][BMA250_BOSCH]%s unlock 32\n",
+					  __func__);
+			return -EINVAL;
+		}
+		rc = regulator_enable(g_sensor_vreg_8921_l17);
+		if (rc) {
+			pr_err("'%s' regulator enable failed, rc=%d\n",
+				"g_sensor_vreg_8921_l17", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[GSNR][BMA250_BOSCH]%s unlock 4\n",
+					  __func__);
+			return rc;
+		}
+		printk(KERN_DEBUG "[GSNR][BMA250_BOSCH] %s, Set to Normal Mode\n",
+			__func__);
+	}
+	mutex_unlock(&sensor_lock);
+	printk(KERN_DEBUG "[GSNR][BMA250_BOSCH]%s: unlock 5\n", __func__);
+	return 0;
+}
+
 static struct bma250_platform_data gsensor_bma250_platform_data = {
         .intr = G_SENSOR_INT,
         .chip_layout = 1,
@@ -3495,14 +3582,138 @@ static struct bma250_platform_data gsensor_bma250_platform_data = {
 	.negate_x = 0,
 	.negate_y = 1,
 	.negate_z = 1,
+	.power_LPM = m7wl_g_sensor_power_LPM,
 };
+
+static int m7wl_compass_power_LPM(int on)
+{
+	int rc = 0;
+
+	mutex_lock(&sensor_lock);
+
+	printk(KERN_DEBUG "[COMP][AKM8963] %s, on = %d, "
+			  "compass_vreg_8921_l17 = 0x%p\n",
+			  __func__, on, compass_vreg_8921_l17);
+
+	if (!compass_vreg_8921_l17)
+		_GET_REGULATOR(compass_vreg_8921_l17, "8921_l17_compass");
+
+	if (on) {
+		rc = regulator_set_optimum_mode(compass_vreg_8921_l17, 100);
+		if (rc < 0) {
+			pr_err("[COMP][AKM8963] set_optimum_mode L17 to LPM"
+				" failed, rc = %d\n", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[COMP][AKM8963]%s unlock 1\n",
+					  __func__);
+			return -EINVAL;
+		}
+		rc = regulator_enable(compass_vreg_8921_l17);
+		if (rc) {
+			pr_err("'%s' regulator enable failed, rc=%d\n",
+				"compass_vreg_8921_l17", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[COMP][AKM8963]%s unlock 2\n",
+					  __func__);
+			return rc;
+		}
+		printk(KERN_DEBUG "[COMP][AKM8963] %s, Set to Low Power"
+			" Mode\n", __func__);
+	} else {
+		rc = regulator_set_optimum_mode(compass_vreg_8921_l17, 100000);
+		if (rc < 0) {
+			pr_err("[COMP][AKM8963] set_optimum_mode L17 to"
+				" Normal mode failed, rc = %d\n", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[COMP][AKM8963]%s unlock 3\n",
+					  __func__);
+			return -EINVAL;
+		}
+		rc = regulator_enable(compass_vreg_8921_l17);
+		if (rc) {
+			pr_err("'%s' regulator enable failed, rc=%d\n",
+				"compass_vreg_8921_l17", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[COMP][AKM8963]%s unlock 4\n",
+					  __func__);
+			return rc;
+		}
+		printk(KERN_DEBUG "[COMP][AKM8963] %s, Set to Normal Mode\n",
+			__func__);
+	}
+	mutex_unlock(&sensor_lock);
+	printk(KERN_DEBUG "[COMP][AKM8963]%s unlock 5\n", __func__);
+	return 0;
+}
 
 static struct akm8963_platform_data compass_platform_data = {
 	.layout = 5,
 	.outbit = 1,
 	.gpio_DRDY = PM8921_GPIO_PM_TO_SYS(COMPASS_AKM_INT),
 	.gpio_RST = 0,
+	.power_LPM = m7wl_compass_power_LPM,
 };
+
+static int m7wl_gyro_power_LPM(int on)
+{
+	int rc = 0;
+
+	mutex_lock(&sensor_lock);
+
+	printk(KERN_DEBUG "[GYRO][R3GD20] %s, on = %d, "
+			  "gyro_vreg_8921_l17 = 0x%p\n",
+			  __func__, on, gyro_vreg_8921_l17);
+
+	if (!gyro_vreg_8921_l17)
+		_GET_REGULATOR(gyro_vreg_8921_l17, "8921_l17_gyro");
+
+	if (on) {
+		rc = regulator_set_optimum_mode(gyro_vreg_8921_l17, 100);
+		if (rc < 0) {
+			pr_err("[GYRO][R3GD20] set_optimum_mode L17 to LPM"
+				" failed, rc = %d\n", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[GYRO][R3GD20]%s unlock 1\n",
+					  __func__);
+			return -EINVAL;
+		}
+		rc = regulator_enable(gyro_vreg_8921_l17);
+		if (rc) {
+			pr_err("'%s' regulator enable failed, rc=%d\n",
+				"gyro_vreg_8921_l17", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[GYRO][R3GD20]%s unlock 2\n",
+					  __func__);
+			return rc;
+		}
+		printk(KERN_DEBUG "[GYRO][R3GD20] %s, Set to Low Power"
+			" Mode\n", __func__);
+	} else {
+		rc = regulator_set_optimum_mode(gyro_vreg_8921_l17, 100000);
+		if (rc < 0) {
+			pr_err("[GYRO][R3GD20] set_optimum_mode L17 to"
+				" Normal mode failed, rc = %d\n", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[GYRO][R3GD20]%s unlock 3\n",
+					  __func__);
+			return -EINVAL;
+		}
+		rc = regulator_enable(gyro_vreg_8921_l17);
+		if (rc) {
+			pr_err("'%s' regulator enable failed, rc=%d\n",
+				"gyro_vreg_8921_l17", rc);
+			mutex_unlock(&sensor_lock);
+			printk(KERN_DEBUG "[GYRO][R3GD20]%s unlock 4\n",
+					  __func__);
+			return rc;
+		}
+		printk(KERN_DEBUG "[GYRO][R3GD20] %s, Set to Normal Mode\n",
+			__func__);
+	}
+	mutex_unlock(&sensor_lock);
+	printk(KERN_DEBUG "[GYRO][R3GD20]%s unlock 5\n", __func__);
+	return 0;
+}
 
 static struct r3gd20_gyr_platform_data gyro_platform_data = {
        .fs_range = R3GD20_GYR_FS_2000DPS,
@@ -3521,6 +3732,7 @@ static struct r3gd20_gyr_platform_data gyro_platform_data = {
 
        .watermark = 0,
        .fifomode = 0,
+	.power_LPM = m7wl_gyro_power_LPM,
 };
 
 static struct i2c_board_info motion_sensor_gsbi_2_info[] = {
@@ -3612,13 +3824,16 @@ static struct cm3629_platform_data cm36282_pdata_sk2 = {
 	.levels = { 12, 14, 77, 566, 1360, 4793, 8101, 13240, 18379, 65535},
 	.correction = {100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100, 10000},
 	.golden_adc = 0x1724,
+#ifdef CONFIG_WSENSOR_ENABLE
+	.w_golden_adc = 0x1AE0,
+#endif
 	.power = NULL,
 	.lpm_power = capella_pl_sensor_lpm_power,
 	.cm3629_slave_address = 0xC0>>1,
 	.ps1_thd_set = 0x15,
 	.ps1_thd_no_cal = 0x90,
 	.ps1_thd_with_cal = 0xD,
-        .ps_th_add = 10,
+        .ps_th_add = 5,
 	.ps_calibration_rule = 1,
 	.ps_conf1_val = CM3629_PS_DR_1_40 | CM3629_PS_IT_1_6T |
 			CM3629_PS1_PERS_2,
@@ -3626,6 +3841,9 @@ static struct cm3629_platform_data cm36282_pdata_sk2 = {
 			CM3629_PS2_INT_DIS | CM3629_PS1_INT_DIS,
 	.ps_conf3_val = CM3629_PS2_PROL_32,
 	.dark_level = 1,
+	.dynamical_threshold = 1,
+	.mapping_table = cm3629_mapping_table,
+	.mapping_size = ARRAY_SIZE(cm3629_mapping_table),
 };
 
 
@@ -3644,13 +3862,16 @@ static struct cm3629_platform_data cm36282_pdata_r8 = {
 	.levels = { 8, 20, 30, 200, 400, 2500, 3688, 6589, 9491, 65535},
 	.correction = {100, 400, 900, 1600, 2500, 3600, 4900, 6400, 8100, 10000},
 	.golden_adc = 0xA7D,
+#ifdef CONFIG_WSENSOR_ENABLE
+	.w_golden_adc = 0x1AE0,
+#endif
 	.power = NULL,
 	.lpm_power = capella_pl_sensor_lpm_power,
 	.cm3629_slave_address = 0xC0>>1,
 	.ps1_thd_set = 0x15,
 	.ps1_thd_no_cal = 0x90,
 	.ps1_thd_with_cal = 0xD,
-        .ps_th_add = 10,
+        .ps_th_add = 5,
 	.ps_calibration_rule = 1,
 	.ps_conf1_val = CM3629_PS_DR_1_40 | CM3629_PS_IT_1_6T |
 			CM3629_PS1_PERS_2,
@@ -5158,9 +5379,6 @@ struct i2c_registry {
 	int                    len;
 };
 
-static struct regulator *motion_sensor_vreg_8921_l17;
-static DEFINE_MUTEX(sensor_lock);
-
 static int m7wl_mpu3050_sensor_power_LPM(int on)
 {
 	int rc = 0;
@@ -5445,6 +5663,9 @@ static void __init m7wl_cir_init(void)
 }
 #endif
 
+extern void (*cam_vcm_on_cb)(void);
+extern void (*cam_vcm_off_cb)(void);
+
 static void __init m7wlv_common_init(void)
 {
 	int rc = 0;
@@ -5498,6 +5719,9 @@ static void __init m7wlv_common_init(void)
 	apq8064_device_qup_spi_gsbi5.dev.platform_data =
 						&m7wl_qup_spi_gsbi5_pdata;
 	m7wl_init_pmic();
+#if 1
+	m7wl_init_pmic_register_cam_cb(&cam_vcm_on_cb, &cam_vcm_off_cb);
+#endif
 
 	android_usb_pdata.swfi_latency =
 			msm_rpmrs_levels[0].latency_us;

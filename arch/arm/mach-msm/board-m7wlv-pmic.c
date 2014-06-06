@@ -536,6 +536,7 @@ static struct pm8xxx_vibrator_platform_data pm8xxx_vib_pdata = {
 	.initial_vibrate_ms = 0,
 	.max_timeout_ms = 15000,
 	.level_mV = 2000,
+	.threshold = 500,
 	};
 
 static struct pm8921_platform_data
@@ -605,4 +606,12 @@ void __init m7wl_init_pmic(void)
 	m7wl_pm8921_platform_data.num_regulators =
 					m7wl_pm8921_regulator_pdata_len;
 
+}
+
+void __init m7wl_init_pmic_register_cam_cb(void *cam_vcm_on_cb, void *cam_vcm_off_cb)
+{
+	if (cam_vcm_on_cb)
+		pm8xxx_vib_pdata.camera_cb = cam_vcm_on_cb;
+	if (cam_vcm_off_cb)
+		pm8xxx_vib_pdata.camera_off_cb = cam_vcm_off_cb;
 }
