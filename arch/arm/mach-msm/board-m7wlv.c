@@ -3472,11 +3472,13 @@ static struct i2c_board_info msm_i2c_gsbi3_info[] = {
 		.platform_data = &syn_ts_3k_data,
 		.irq = MSM_GPIO_TO_INT(TP_ATTz)
 	},
+	#ifdef CONFIG_TOUCHSCREEN_HIMAX
 	{
 		I2C_BOARD_INFO(HIMAX8528_NAME, 0x90 >> 1),
 		.platform_data = &evt_ts_himax_data,
 		.irq = MSM_GPIO_TO_INT(TP_ATTz)
 	},
+	#endif
 };
 
 static ssize_t virtual_syn_keys_show(struct kobject *kobj,
