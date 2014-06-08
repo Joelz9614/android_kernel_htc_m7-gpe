@@ -5101,6 +5101,9 @@ static struct platform_device *common_devices[] __initdata = {
 #endif
 	&apq_compr_dsp,
 	&apq_multi_ch_pcm,
+#ifdef CONFIG_AUDIO_LOW_LATENCY
+	&apq_lowlatency_pcm,
+#endif
 };
 
 static struct platform_device *cdp_devices[] __initdata = {
